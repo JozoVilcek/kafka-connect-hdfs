@@ -44,8 +44,6 @@ import java.util.concurrent.Future;
 import io.confluent.common.utils.Time;
 import io.confluent.connect.avro.AvroData;
 import io.confluent.connect.hdfs.errors.HiveMetaStoreException;
-import io.confluent.connect.hdfs.filter.CommittedFileFilter;
-import io.confluent.connect.hdfs.filter.TopicPartitionCommittedFileFilter;
 import io.confluent.connect.hdfs.hive.HiveMetaStore;
 import io.confluent.connect.hdfs.hive.HiveUtil;
 import io.confluent.connect.hdfs.partitioner.Partitioner;
@@ -342,13 +340,8 @@ public class TopicPartitionWriter {
           case WRITE_PARTITION_PAUSED:
             if (currentSchema == null) {
               if (compatibility != StorageSchemaCompatibility.NONE && offset != -1) {
-                String topicDir = FileUtils.topicDirectory(url, topicsDir, tp.topic());
-                CommittedFileFilter filter = new TopicPartitionCommittedFileFilter(tp);
-                FileStatus fileStatusWithMaxOffset = FileUtils.fileStatusWithMaxOffset(
-                    storage,
-                    new Path(topicDir),
-                    filter
-                );
+                FileStatus fileStatusWithMaxOffset = FileUtils
+                    .fileStatusWithMaxOffset(url, topicsDir, tp, storage, partitioner);
                 if (fileStatusWithMaxOffset != null) {
                   currentSchema = schemaFileReader.getSchema(
                       connectorConfig,
@@ -621,13 +614,8 @@ public class TopicPartitionWriter {
     // Use the recursive filename scan approach
     log.debug("Could not use WAL approach for recovering offsets, "
         + "searching for latest offsets on HDFS.");
-    String path = FileUtils.topicDirectory(url, topicsDir, tp.topic());
-    CommittedFileFilter filter = new TopicPartitionCommittedFileFilter(tp);
-    FileStatus fileStatusWithMaxOffset = FileUtils.fileStatusWithMaxOffset(
-        storage,
-        new Path(path),
-        filter
-    );
+    FileStatus fileStatusWithMaxOffset = FileUtils
+            .fileStatusWithMaxOffset(url, topicsDir, tp, storage, partitioner);
     if (fileStatusWithMaxOffset != null) {
       long lastCommittedOffsetToHdfs = FileUtils.extractOffset(
           fileStatusWithMaxOffset.getPath().getName());

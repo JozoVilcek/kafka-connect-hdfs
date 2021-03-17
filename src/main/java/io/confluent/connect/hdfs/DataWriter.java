@@ -389,11 +389,8 @@ public class DataWriter {
 
     try {
       for (String topic : topics) {
-        String topicDir = FileUtils.topicDirectory(
-            connectorConfig.url(),
-            topicDirs.get(topic),
-            topic
-        );
+        String topicDir = FileUtils.topicDataRootDirectory(
+                connectorConfig.url(), topicDirs.get(topic), topic, partitioner);
         CommittedFileFilter filter = new TopicCommittedFileFilter(topic);
         FileStatus fileStatusWithMaxOffset = FileUtils.fileStatusWithMaxOffset(
             storage,
