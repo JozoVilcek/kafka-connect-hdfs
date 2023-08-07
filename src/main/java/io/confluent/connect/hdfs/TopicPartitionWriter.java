@@ -61,6 +61,7 @@ public class TopicPartitionWriter {
   private static final Logger log = LoggerFactory.getLogger(TopicPartitionWriter.class);
   private static final TimestampExtractor WALLCLOCK =
       new TimeBasedPartitioner.WallclockTimestampExtractor();
+  public static final long FAILURE_RECOVERY_GRACE_PERIOD_MS = 30000;
   private final io.confluent.connect.storage.format.RecordWriterProvider<HdfsSinkConnectorConfig>
       newWriterProvider;
   private final String zeroPadOffsetFormat;
@@ -383,7 +384,13 @@ public class TopicPartitionWriter {
               } else {
                 SinkRecord projectedRecord = compatibility.project(record, null, currentSchema);
                 writeRecord(projectedRecord);
-                failureStartTimeMs = -1L;
+                // to compensate for delayed write (e.g. buffering) wait for some minimal period
+                //   to call out successful recovery
+                if (failureStartTimeMs > 0) {
+                  if (time.milliseconds() - failureStartTimeMs > FAILURE_RECOVERY_GRACE_PERIOD_MS) {
+                    failureStartTimeMs = -1L;
+                  }
+                }
                 buffer.poll();
                 break;
               }

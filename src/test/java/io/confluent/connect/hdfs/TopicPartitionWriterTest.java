@@ -42,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import io.confluent.common.utils.MockTime;
 import io.confluent.connect.hdfs.avro.AvroDataFileReader;
@@ -65,10 +66,7 @@ import io.confluent.connect.storage.wal.WAL;
 
 import static io.confluent.connect.storage.StorageSinkConnectorConfig.FLUSH_SIZE_CONFIG;
 import static org.apache.kafka.common.utils.Time.SYSTEM;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class TopicPartitionWriterTest extends TestWithMiniDFSCluster {
   private RecordWriterProvider writerProvider = null;
@@ -853,6 +851,99 @@ public class TopicPartitionWriterTest extends TestWithMiniDFSCluster {
 
     assertNotNull(context.offsets().get(new TopicPartition(TOPIC, PARTITION)));
     assertTrue(topicPartitionWriter.getWriters().isEmpty());
+  }
+
+  @Test
+  public void testWriteFailureResetReadsRecoveryGracePeriod() throws Exception {
+    // test that retry timeout tracking is not reset on single success write but wait for
+    //   continuous minimal success interval to handle recovery from flapping writes and
+    //   buffering false positive success writes
+    long retryTimeout = 30000;
+    long retryBackoff = 1000;
+    localProps.put(HdfsSinkConnectorConfig.RETRY_TIMEOUT_CONFIG, String.valueOf(retryTimeout));
+    localProps.put(HdfsSinkConnectorConfig.RETRY_BACKOFF_CONFIG, String.valueOf(retryBackoff));
+    setUp();
+
+    partitioner = new DataWriter.PartitionerWrapper(
+            new io.confluent.connect.storage.partitioner.TimeBasedPartitioner<>()
+    );
+    parsedConfig.put(PartitionerConfig.PARTITION_DURATION_MS_CONFIG, TimeUnit.DAYS.toMillis(1));
+    parsedConfig.put(PartitionerConfig.TIMESTAMP_EXTRACTOR_CLASS_CONFIG, MockedWallclockTimestampExtractor.class.getName());
+    partitioner.configure(parsedConfig);
+    MockedWallclockTimestampExtractor.TIME.sleep(SYSTEM.milliseconds());
+
+    AtomicBoolean breakWritesSignal = new AtomicBoolean(false);
+    newWriterProvider = createFailingWriterFactory(breakWritesSignal);
+
+    TopicPartitionWriter topicPartitionWriter = new TopicPartitionWriter(
+            TOPIC_PARTITION,
+            storage,
+            writerProvider,
+            newWriterProvider,
+            partitioner,
+            connectorConfig,
+            context,
+            avroData,
+            time
+    );
+
+    Schema schema = createSchema();
+    SinkRecord record = new SinkRecord(TOPIC, PARTITION, Schema.STRING_SCHEMA, "key",
+            schema, createRecord(schema, 16, 12.2f), 3);
+
+    // 1. successful write
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    // 2. fail write
+    breakWritesSignal.set(true);
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    assertEquals(retryBackoff, context.timeout());
+    assertTrue(context.offsets().isEmpty());
+
+    // 3. success after decent time passed, but shorter than grace period
+    time.sleep(TopicPartitionWriter.FAILURE_RECOVERY_GRACE_PERIOD_MS - 1);
+    breakWritesSignal.set(false);
+    topicPartitionWriter.write();
+
+    // 4. fail write again with a bit more time passed, but not enough to trigger reset on its own
+    time.sleep(retryTimeout / 2);
+    breakWritesSignal.set(true);
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    // 5. expect reset to be triggered as it tracks failure start time from the first event
+    assertNotNull(context.offsets().get(new TopicPartition(TOPIC, PARTITION)));
+    assertTrue(topicPartitionWriter.getWriters().isEmpty());
+
+    // 6. test the same but with success write after grace period should reset failure event start time
+
+    context.offsets().clear();
+    context.timeout(-1L);
+
+    breakWritesSignal.set(false);
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    breakWritesSignal.set(true);
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    time.sleep(TopicPartitionWriter.FAILURE_RECOVERY_GRACE_PERIOD_MS + 1);
+    breakWritesSignal.set(false);
+    topicPartitionWriter.write();
+
+    time.sleep(retryTimeout / 2);
+    breakWritesSignal.set(true);
+    topicPartitionWriter.buffer(record);
+    topicPartitionWriter.write();
+
+    assertEquals(retryBackoff, context.timeout());
+    assertTrue(context.offsets().isEmpty());
+    assertFalse(topicPartitionWriter.getWriters().isEmpty());
+
   }
 
   @Test
