@@ -24,7 +24,7 @@
     </parent>
 
     <artifactId>kafka-connect-hdfs</artifactId>
-    <version>10.1.5-zeta-3</version>
+    <version>10.1.5-zeta-4</version>
     <packaging>jar</packaging>
     <name>kafka-connect-hdfs</name>
     <organization>
