@@ -102,6 +102,7 @@ public class TopicPartitionWriter {
   private final long timeoutMs;
   private final long retryTimeoutMs;
   private long failureStartTimeMs;
+  private long successStartTimeMs;
   private long failureTime;
   private final StorageSchemaCompatibility compatibility;
   private Schema currentSchema;
@@ -212,6 +213,7 @@ public class TopicPartitionWriter {
     startOffsets = new HashMap<>();
     endOffsets = new HashMap<>();
     state = State.RECOVERY_STARTED;
+    successStartTimeMs = -1L;
     failureStartTimeMs = -1L;
     failureTime = -1L;
     // The next offset to consume after the last commit (one more than last offset written to HDFS)
@@ -384,13 +386,7 @@ public class TopicPartitionWriter {
               } else {
                 SinkRecord projectedRecord = compatibility.project(record, null, currentSchema);
                 writeRecord(projectedRecord);
-                // to compensate for delayed write (e.g. buffering) wait for some minimal period
-                //   to call out successful recovery
-                if (failureStartTimeMs > 0) {
-                  if (time.milliseconds() - failureStartTimeMs > FAILURE_RECOVERY_GRACE_PERIOD_MS) {
-                    failureStartTimeMs = -1L;
-                  }
-                }
+                handleFailureRecoveryAfterWrite();
                 buffer.poll();
                 break;
               }
@@ -419,6 +415,7 @@ public class TopicPartitionWriter {
         if (failureStartTimeMs == -1L) {
           failureStartTimeMs = failureTime;
         }
+        successStartTimeMs = -1L;
         if (retryTimeoutMs > 0 && (failureTime - failureStartTimeMs) > retryTimeoutMs) {
           log.warn("Resetting reads for topic partition {} because write retries timed out", tp);
           resetReads();
@@ -963,6 +960,19 @@ public class TopicPartitionWriter {
       return null;
     });
     hiveUpdateFutures.add(future);
+  }
+
+  private void handleFailureRecoveryAfterWrite() {
+    // to compensate for delayed write (e.g. buffering) wait for some minimal period
+    //   to call out successful recovery
+    if (failureStartTimeMs > 0) {
+      if (successStartTimeMs == -1L) {
+        successStartTimeMs = time.milliseconds();
+      }
+      if (time.milliseconds() - successStartTimeMs > FAILURE_RECOVERY_GRACE_PERIOD_MS) {
+        failureStartTimeMs = -1L;
+      }
+    }
   }
 
   private enum State {
